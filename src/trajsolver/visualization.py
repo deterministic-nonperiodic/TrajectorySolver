@@ -566,7 +566,7 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
             target_lons = np.atleast_1d(target_orbit["GLon"].values)
             target_lats = np.atleast_1d(target_orbit["GLat"].values)
             target_alts = np.atleast_1d(target_orbit["GAlt"].values)
-        ax.scatter(target_lons, target_lats, target_alts,
+        ax.scatter(target_lons, target_lats, zs=target_alts,
                    color='gold', marker='*', s=120, edgecolor='black',
                    linewidth=0.8, label="Target Orbit Point", zorder=6)
         ax.scatter(target_lons, target_lats, zs=0, zdir='z',
