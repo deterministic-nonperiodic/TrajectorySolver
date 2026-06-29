@@ -1,47 +1,73 @@
 # Lagrangian Trajectory Model with Ensemble Support
 
-This repository contains a flexible and efficient Python implementation for computing Lagrangian trajectories using 3D wind fields from reanalyses or models, such as ICON. The tool supports ensemble simulations with noise perturbations and early stopping when particles approach a specified target region.
+This repository contains a flexible and efficient Python implementation for computing Lagrangian trajectories using 3D wind fields from reanalyses or models, such as ICON. The tool supports ensemble simulations with noise perturbations, automatic coordinate and unit normalization (including pressure velocity to physical velocity conversion), and early stopping when particles approach a specified target region.
 
 ---
 
 ## 🚀 Features
 
-- ✅ Vectorized integration using `scipy.solve_ivp` with `dense_output=True`
-- ✅ Native support for `xarray` and `dask` datasets
-- ✅ Lognormal or Gaussian wind perturbations for ensemble spread
-- ✅ Early termination via event detection based on spatial proximity
-- ✅ Compatible with both forward and backward trajectory calculations
-- ✅ CF-compliant `xarray.Dataset` output
+- ✅ **Vectorized Integration**: Fast integration using `scipy.solve_ivp` with `dense_output=True` and multi-threaded parallel execution.
+- ✅ **Automatic Coordinate Detection**: Seamlessly detects and curates standard and non-standard dimension names and coordinate conventions.
+- ✅ **Stochastic Ensemble Spread**: Support for lognormal or Gaussian wind perturbations.
+- ✅ **Target Proximity Event Detection**: Early termination when trajectories approach a moving target trajectory/orbit.
+- ✅ **CF-compliant Output**: Results are returned as a standard self-describing `xarray.Dataset` containing coordinates and metadata.
 
 ---
 
-## 📦 Requirements
+## 📦 Installation
 
-Install dependencies with:
+This package can be installed either via Conda (recommended for managing binary geospatial dependencies like PROJ and Cartopy) or using Pip.
+
+### Option 1: Conda (Recommended)
+
+To create a new environment and install all dependencies (pinned to stable compatible versions to prevent layout and binary compatibility issues):
 
 ```bash
-pip install numpy scipy pandas xarray dask joblib pyproj
+conda env create -f environment.yml
+conda activate trajsolver
+pip install -e .
 ```
+
+### Option 2: Pip
+
+You can also install the package and its requirements directly using `pip`:
+
+```bash
+# Standard installation
+pip install -e .
+
+# Development installation (includes pytest, coverage, etc.)
+pip install -e ".[dev]"
+```
+
+---
 
 ## 🚀 Basic Usage
 
 ```python
-from lagrangian import LagrangianTrajectories
+import xarray as xr
+from trajsolver import LagrangianTrajectories
 
-# Create the model
+# Load your wind dataset (containing u, v, w)
+wind_data = xr.open_dataset("data/jawara_winds_HL_02-2025.nc")
+
+# Initialize the solver
 model = LagrangianTrajectories(
-    data=wind_data,  # xarray.Dataset with 'u', 'v', 'w'
-    timestep="10 minutes",    # Any pandas.Timedelta compatible
-    noise_type='lognormal',
-    start_time="2025-02-20T00:00:00"
+    data=wind_data,
+    timestep="10 minutes",  # Any pandas-compatible timedelta or seconds
+    integration_method="RK23",
+    interpolation_method="linear",
+    noise_type="lognormal",
+    verbose_level=1,
 )
 
 # Run the simulation
 trajectories = model.advect_particles(
-    start_positions=[(11.4, 54.1, 96000)],  # (lon [deg], lat [deg], z [meters])
-    duration="3h",
-    ensemble_size=20,
-    target=target_ds,  # Optional xarray.Dataset with a moving target
-    distance_tolerance=10e3
+    start_positions=[(11.4, 54.1, 96000)],  # List of tuples: (lon [deg], lat [deg], z [meters])
+    duration="3 days",
+    ensemble_size=100,
+    target=target_ds,  # Optional target orbit xarray.Dataset
+    distance_tolerance=10e3,  # Target tolerance in meters
+    n_jobs=-1,  # Use all available CPU threads
 )
 ```
