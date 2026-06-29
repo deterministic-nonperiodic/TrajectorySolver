@@ -16,11 +16,11 @@ This repository contains a flexible and efficient Python implementation for comp
 
 ## 📦 Installation
 
-This package can be installed either via Conda (recommended for managing binary geospatial dependencies like PROJ and Cartopy) or using Pip.
+This package can be installed via Conda (recommended for managing binary geospatial dependencies like PROJ and Cartopy) or using Pip (from a local directory or directly from a Git repository).
 
 ### Option 1: Conda (Recommended)
 
-To create a new environment and install all dependencies (pinned to stable compatible versions to prevent layout and binary compatibility issues):
+To create a new environment and install all dependencies:
 
 ```bash
 conda env create -f environment.yml
@@ -28,9 +28,17 @@ conda activate trajsolver
 pip install -e .
 ```
 
-### Option 2: Pip
+### Option 2: Pip (From Git Repository)
 
-You can also install the package and its requirements directly using `pip`:
+You can install the package directly from GitHub:
+
+```bash
+pip install git+https://github.com/deterministic-nonperiodic/TrajectorySolver.git
+```
+
+### Option 3: Pip (Local Development)
+
+To install in editable mode for local development:
 
 ```bash
 # Standard installation
