@@ -30,7 +30,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from dateutil import parser
-from joblib import Parallel, delayed
 from pyproj import Geod, Transformer
 from scipy.integrate import solve_ivp
 from scipy.interpolate import RegularGridInterpolator
@@ -54,12 +53,12 @@ dask.config.set({"array.chunk-size": "256 MiB"})
 
 
 def _convert_pressure_velocity(
-    w_vals: np.ndarray,
-    w_units: str,
-    z_axis: np.ndarray,
-    z_idx: int,
-    dims: tuple,
-    full_ds: xr.Dataset = None,
+        w_vals: np.ndarray,
+        w_units: str,
+        z_axis: np.ndarray,
+        z_idx: int,
+        dims: tuple,
+        full_ds: xr.Dataset = None,
 ) -> np.ndarray:
     """
     Convert vertical velocity from pressure velocity (hPa/s, Pa/s, etc.) to physical velocity (m/s).
@@ -84,13 +83,13 @@ def _convert_pressure_velocity(
     if density_var is not None:
         print(f"Using actual density variable '{density_var}' from dataset for conversion.")
         rho_ds = full_ds[density_var]
-        
+
         # If density has same dimensions as w, we can align and use it directly
         if list(rho_ds.dims) == list(dims):
             rho_vals = rho_ds.values.astype(w_vals.dtype)
             conv_factors = -scale_factor / (rho_vals * g)
             return w_vals * conv_factors
-        
+
         # If density is 1D along the z axis
         z_dim_name = dims[z_idx]
         if list(rho_ds.dims) == [z_dim_name]:
@@ -100,35 +99,37 @@ def _convert_pressure_velocity(
             broadcast_shape[z_idx] = len(z_axis)
             return w_vals * conv_factors.reshape(broadcast_shape)
 
-        print(f"Density variable '{density_var}' found but shape {rho_ds.shape} is incompatible. Falling back to US Standard Atmosphere.")
+        print(
+            f"Density variable '{density_var}' found but shape {rho_ds.shape} is incompatible. Falling back to US Standard Atmosphere.")
 
     # Fallback: US Standard Atmosphere 1976 density profile from 0 to 150 km
     print("Detected vertical velocity units (pressure velocity).")
-    print("Converting vertical velocity to m/s using US Standard Atmosphere 1976 density profile...")
+    print(
+        "Converting vertical velocity to m/s using US Standard Atmosphere 1976 density profile...")
     z_ref = np.arange(0, 160000, 10000, dtype=np.float64)
     rho_ref = np.array([
-        1.22500,      # 0 km
-        4.12707e-1,   # 10 km
-        8.89100e-2,   # 20 km
-        1.84100e-2,   # 30 km
-        3.99570e-3,   # 40 km
-        1.02690e-3,   # 50 km
-        3.09680e-4,   # 60 km
-        8.28300e-5,   # 70 km
-        1.84570e-5,   # 80 km
-        3.25100e-6,   # 90 km
-        5.60400e-7,   # 100 km
-        9.70800e-8,   # 110 km
-        2.22200e-8,   # 120 km
-        8.15200e-9,   # 130 km
-        3.85200e-9,   # 140 km
-        2.07000e-9,   # 150 km
+        1.22500,  # 0 km
+        4.12707e-1,  # 10 km
+        8.89100e-2,  # 20 km
+        1.84100e-2,  # 30 km
+        3.99570e-3,  # 40 km
+        1.02690e-3,  # 50 km
+        3.09680e-4,  # 60 km
+        8.28300e-5,  # 70 km
+        1.84570e-5,  # 80 km
+        3.25100e-6,  # 90 km
+        5.60400e-7,  # 100 km
+        9.70800e-8,  # 110 km
+        2.22200e-8,  # 120 km
+        8.15200e-9,  # 130 km
+        3.85200e-9,  # 140 km
+        2.07000e-9,  # 150 km
     ], dtype=np.float64)
-    
+
     log_rho_ref = np.log(rho_ref)
     log_rho_z = np.interp(z_axis, z_ref, log_rho_ref, left=log_rho_ref[0], right=log_rho_ref[-1])
     rho_z = np.exp(log_rho_z)
-    
+
     conv_factors = -scale_factor / (rho_z * g)
     broadcast_shape = [1] * w_vals.ndim
     broadcast_shape[z_idx] = len(z_axis)
@@ -641,7 +642,8 @@ class LagrangianTrajectories:
                     print("  " + event_info)
 
             if self.verbose >= 2:
-                print(f"Member {member} finished in {pytime.time() - t_start:.2f} seconds. nfev={result.nfev}")
+                print(
+                    f"Member {member} finished in {pytime.time() - t_start:.2f} seconds. nfev={result.nfev}")
 
             return member, valid_times, traj, event_info
 
@@ -651,7 +653,8 @@ class LagrangianTrajectories:
         if n_jobs == 1:
             if show_progress:
                 from tqdm import tqdm
-                results = [integrate_member(m) for m in tqdm(range(ensemble_size), desc="Integrating ensemble")]
+                results = [integrate_member(m) for m in
+                           tqdm(range(ensemble_size), desc="Integrating ensemble")]
             else:
                 results = [integrate_member(m) for m in range(ensemble_size)]
         else:
@@ -665,7 +668,8 @@ class LagrangianTrajectories:
                 if show_progress:
                     from tqdm import tqdm
                     results = []
-                    for f in tqdm(as_completed(futures), total=len(futures), desc="Integrating ensemble"):
+                    for f in tqdm(as_completed(futures), total=len(futures),
+                                  desc="Integrating ensemble"):
                         results.append(f.result())
                 else:
                     results = [f.result() for f in as_completed(futures)]

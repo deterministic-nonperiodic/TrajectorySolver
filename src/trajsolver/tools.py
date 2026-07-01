@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pyproj import Geod
-from scipy.interpolate import interp1d
+from scipy.interpolate import CubicSpline, interp1d
 
 
 def save_cf_compliant(ds: xr.Dataset, path: str):
@@ -260,7 +260,67 @@ def read_falcon(filename):
     return orbit_df
 
 
-# Helper function to convert duration or timestep to seconds
+def sample_orbit_positions(
+        orbit_df: pd.DataFrame,
+        n: int,
+        alt_min: float = 70.0,
+        lon_min: float = -180.0,
+        lon_max: float = 180.0,
+        seed=None,
+) -> list[tuple[float, float, float]]:
+    """Sample n starting positions uniformly along a filtered orbit segment.
+
+    Fits a cubic spline through the filtered knots, parameterised by cumulative
+    3-D arc-length, then draws n random positions uniformly along the arc.
+
+    Parameters
+    ----------
+    orbit_df : pd.DataFrame
+        Orbit data from read_falcon.  Requires columns GLon, GLat, GAlt (km).
+    n : int
+        Number of positions to generate.
+    alt_min : float
+        Lower altitude bound [km].
+    lon_min, lon_max : float
+        Longitude window [degrees].
+    seed : int or None
+        RNG seed.
+
+    Returns list of (lon, lat, z_m) tuples where z_m is altitude in metres.
+    Raises ValueError if fewer than 2 orbit rows survive the filter.
+    """
+    seg = orbit_df[
+        (orbit_df["GAlt"] >= alt_min)
+        & (orbit_df["GLon"] >= lon_min)
+        & (orbit_df["GLon"] <= lon_max)
+    ].sort_values("GAlt", ascending=False).reset_index(drop=True)
+
+    if len(seg) < 2:
+        raise ValueError(
+            f"sample_orbit_positions: only {len(seg)} orbit row(s) survive the "
+            f"filter (alt_min={alt_min}, lon_min={lon_min}, lon_max={lon_max})."
+        )
+
+    dlat = np.diff(seg["GLat"].values)
+    dlon = np.diff(seg["GLon"].values)
+    dalt = np.diff(seg["GAlt"].values)
+    ds = np.sqrt(dlat ** 2 + dlon ** 2 + dalt ** 2)
+    t_knots = np.concatenate([[0.0], np.cumsum(ds)])
+    t_knots /= t_knots[-1]
+
+    cs_lon = CubicSpline(t_knots, seg["GLon"].values)
+    cs_lat = CubicSpline(t_knots, seg["GLat"].values)
+    cs_alt = CubicSpline(t_knots, seg["GAlt"].values)
+
+    rng = np.random.default_rng(seed)
+    t_samples = np.sort(rng.uniform(0.0, 1.0, n))
+
+    return [
+        (float(cs_lon(t)), float(cs_lat(t)), 1e3 * float(cs_alt(t)))
+        for t in t_samples
+    ]
+
+
 def convert_to_seconds(value, unit='s'):
     if isinstance(value, (int, float)):
         return pd.Timedelta(value, unit=unit).total_seconds()

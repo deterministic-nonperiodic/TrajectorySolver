@@ -11,7 +11,7 @@ read_falcon            : reader for ESA Falcon orbit dat files
 
 from .core import LagrangianTrajectories
 from .coord_detection import detect_and_curate, detect_coords, curate_coords
-from .tools import save_cf_compliant, read_falcon
+from .tools import save_cf_compliant, read_falcon, sample_orbit_positions
 
 __all__ = [
     "LagrangianTrajectories",
@@ -20,4 +20,5 @@ __all__ = [
     "curate_coords",
     "save_cf_compliant",
     "read_falcon",
+    "sample_orbit_positions",
 ]

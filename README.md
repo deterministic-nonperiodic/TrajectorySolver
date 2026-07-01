@@ -4,17 +4,17 @@ This repository contains a flexible and efficient Python implementation for comp
 
 ---
 
-## 🚀 Features
+## Features
 
-- ✅ **Vectorized Integration**: Fast integration using `scipy.solve_ivp` with `dense_output=True` and multi-threaded parallel execution.
-- ✅ **Automatic Coordinate Detection**: Seamlessly detects and curates standard and non-standard dimension names and coordinate conventions.
-- ✅ **Stochastic Ensemble Spread**: Support for lognormal or Gaussian wind perturbations.
-- ✅ **Target Proximity Event Detection**: Early termination when trajectories approach a moving target trajectory/orbit.
-- ✅ **CF-compliant Output**: Results are returned as a standard self-describing `xarray.Dataset` containing coordinates and metadata.
+- **Vectorized Integration**: Fast integration using `scipy.solve_ivp` with `dense_output=True` and multi-threaded parallel execution.
+- **Automatic Coordinate Detection**: Seamlessly detects and curates standard and non-standard dimension names and coordinate conventions.
+- **Stochastic Ensemble Spread**: Support for lognormal or Gaussian wind perturbations.
+- **Target Proximity Event Detection**: Early termination when trajectories approach a moving target trajectory/orbit.
+- **CF-compliant Output**: Results are returned as a standard self-describing `xarray.Dataset` containing coordinates and metadata.
 
 ---
 
-## 📦 Installation
+## Installation
 
 This package can be installed via Conda (recommended for managing binary geospatial dependencies like PROJ and Cartopy) or using Pip (from a local directory or directly from a Git repository).
 
@@ -50,7 +50,7 @@ pip install -e ".[dev]"
 
 ---
 
-## 🚀 Basic Usage
+## Basic Usage
 
 ```python
 import xarray as xr

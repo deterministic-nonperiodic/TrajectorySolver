@@ -87,27 +87,149 @@ def custom_viridis():
     return mcolors.LinearSegmentedColormap.from_list("custom_viridis", white_to_viridis)
 
 
-def generate_representative_particles(trajectories, orbit_df):
+def _target_point_to_orbit_df(target_point):
+    """Convert target_point to an orbit-style DataFrame with columns
+    [timestamp, GLon, GLat, GAlt].  Returns None for unsupported types.
     """
-    For each particle, select the ensemble member that intersects the orbit, or use ensemble 0 as fallback.
-    Returns:
-        A dictionary mapping particle index to the selected ensemble index.
-    """
-    _, intersect_indices = compute_intersections(trajectories, orbit_df,
-                                                 horiz_tol_km=100, vert_tol_km=15)
-    selected = {}
-    for p in trajectories.particle.values:
-        # Filter for current particle
-        mask = trajectories.particle.values[intersect_indices[:, 1]] == p
-        intersect_ens = intersect_indices[mask][:, 2]
-        intersect_time = intersect_indices[mask][:, 0]
+    if target_point is None:
+        return None
 
-        if intersect_ens.size > 0:
-            selected[p] = (intersect_ens[0].item(), intersect_time[0].item())
-        else:
-            selected[p] = (0, trajectories.time.size - 1)  # fallback
-    selected = dict(sorted(selected.items()))
-    return selected
+    if isinstance(target_point, xr.Dataset):
+        times = pd.to_datetime(target_point["time"].values)
+        lons = target_point["lon"].values.ravel()
+        lats = target_point["lat"].values.ravel()
+        alts = target_point["z"].values.ravel()  # km
+        return pd.DataFrame({"timestamp": times, "GLon": lons, "GLat": lats, "GAlt": alts})
+
+    if isinstance(target_point, dict):
+        row = {
+            "timestamp": pd.to_datetime(target_point.get("time", pd.NaT)),
+            "GLon": float(target_point.get("lon", target_point.get("GLon", np.nan))),
+            "GLat": float(target_point.get("lat", target_point.get("GLat", np.nan))),
+            "GAlt": float(target_point.get("z", target_point.get("GAlt", np.nan))),
+        }
+        return pd.DataFrame([row])
+
+    return None
+
+
+def _select_nearest_to_target(trajectories, target_point, max_dist_km=None):
+    """For each particle, pick the ensemble member closest to target_point
+    at the trajectory time step nearest to the target timestamp.
+
+    If max_dist_km is given, particles whose closest member exceeds that
+    horizontal distance are excluded from the result.
+
+    Returns dict: particle → (ensemble_index, time_index)
+    """
+    from pyproj import Geod
+    geod = Geod(ellps="WGS84")
+
+    tp_time = pd.to_datetime(target_point["time"].values.ravel()[0])
+    tp_lon  = float(target_point["lon"].values.ravel()[0])
+    tp_lat  = float(target_point["lat"].values.ravel()[0])
+
+    traj_times_pd = pd.to_datetime(trajectories.time.values)
+    t_idx = int(np.abs(traj_times_pd - tp_time).argmin())
+
+    lon_at_t = trajectories.lon.isel(time=t_idx).values   # (particle, ensemble)
+    lat_at_t = trajectories.lat.isel(time=t_idx).values
+    n_particles, n_ens = lon_at_t.shape
+
+    result = {}
+    for pi, p in enumerate(trajectories.particle.values):
+        tp_lons = np.full(n_ens, tp_lon)
+        tp_lats = np.full(n_ens, tp_lat)
+        _, _, dist_m = geod.inv(lon_at_t[pi], lat_at_t[pi], tp_lons, tp_lats)
+        best_ens = int(np.nanargmin(dist_m))
+        min_dist_km = float(dist_m[best_ens]) / 1000.0
+        if max_dist_km is None or min_dist_km <= max_dist_km:
+            result[p] = (best_ens, t_idx)
+
+    return result
+
+
+def generate_representative_particles(trajectories, orbit_df=None, target_point=None,
+                                      horiz_tol_km=100, vert_tol_km=15,
+                                      max_dist_km=None):
+    """Select one representative ensemble member per particle.
+
+    Preference order: target_point proximity > orbit intersection.
+    Particles satisfying neither criterion are omitted from the result.
+
+    Parameters
+    ----------
+    orbit_df : pd.DataFrame or None
+        Re-entry orbit [timestamp, GLon, GLat, GAlt].
+    target_point : xr.Dataset or None
+        Single observation point [time, lon, lat, z].
+    horiz_tol_km, vert_tol_km : float
+        Thresholds for orbit intersection.
+    max_dist_km : float or None
+        Maximum distance from target_point [km].  None = no filter.
+
+    Returns dict: particle → (ensemble_index, time_index)
+    """
+    particles = trajectories.particle.values
+
+    target_hits = {}
+    if isinstance(target_point, xr.Dataset):
+        target_hits = _select_nearest_to_target(
+            trajectories, target_point, max_dist_km=max_dist_km
+        )
+
+    orbit_hits = {}
+    if orbit_df is not None:
+        _, orb_indices = compute_intersections(
+            trajectories, orbit_df,
+            horiz_tol_km=horiz_tol_km, vert_tol_km=vert_tol_km
+        )
+        for p in particles:
+            mask = trajectories.particle.values[orb_indices[:, 1]] == p
+            ens_hits = orb_indices[mask][:, 2]
+            time_hits = orb_indices[mask][:, 0]
+            if ens_hits.size > 0:
+                orbit_hits[p] = (int(ens_hits[0]), int(time_hits[0]))
+
+    selected = {}
+    for p in particles:
+        if p in target_hits:
+            selected[p] = target_hits[p]
+        elif p in orbit_hits:
+            selected[p] = orbit_hits[p]
+
+    return dict(sorted(selected.items()))
+
+
+def _marker_stride(lon, lat, ax, min_sep_px=50):
+    """Return a time-step stride so markers along a trajectory are separated
+    by roughly min_sep_px display pixels.
+
+    Projects the path into display coordinates, computes arc-length, and
+    picks the integer stride that places total_px / min_sep_px markers.
+    """
+    lon = np.asarray(lon, dtype=float)
+    lat = np.asarray(lat, dtype=float)
+    n = len(lon)
+    if n < 2:
+        return 1
+
+    try:
+        data_to_display = ax.transData
+        import cartopy.crs as _ccrs
+        lonlat_to_disp = _ccrs.PlateCarree()._as_mpl_transform(ax) + data_to_display
+        pts_display = lonlat_to_disp.transform(np.column_stack([lon, lat]))
+    except Exception:
+        pts_display = np.column_stack([lon, lat])
+
+    diffs = np.diff(pts_display, axis=0)
+    total_px = np.hypot(diffs[:, 0], diffs[:, 1]).sum()
+
+    if total_px <= 0:
+        return max(1, n)
+
+    desired_markers = max(2, total_px / min_sep_px)
+    return max(1, int(round((n - 1) / desired_markers)))
 
 
 def annotate_times_dedup_display(
@@ -157,7 +279,9 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
                                           calculate_intersections=True,
                                           map_extent=None,
                                           target_point=None,
-                                          target_label="OSIRIS"):
+                                          target_label="OSIRIS",
+                                          show_wind=True,
+                                          max_dist_km=None):
     # Visualizes ensemble back-trajectories with wind streamlines and KDE of endpoints.
     fig, ax = plt.subplots(figsize=(8.42, 5.5), constrained_layout=False,
                            subplot_kw={"projection": ccrs.PlateCarree()})
@@ -206,15 +330,15 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
         if orbit is not None:
             orbit_lon = orbit['GLon'].values
             orbit_lat = orbit['GLat'].values
-            
+
             # Filter orbit coordinates to a bounding box around the trajectories
             valid_orbit = (
-                (orbit_lon >= traj_lon_min - 20.0) & (orbit_lon <= traj_lon_max + 20.0) &
-                (orbit_lat >= traj_lat_min - 10.0) & (orbit_lat <= traj_lat_max + 10.0)
+                    (orbit_lon >= traj_lon_min - 20.0) & (orbit_lon <= traj_lon_max + 20.0) &
+                    (orbit_lat >= traj_lat_min - 10.0) & (orbit_lat <= traj_lat_max + 10.0)
             )
             filtered_lon = orbit_lon[valid_orbit]
             filtered_lat = orbit_lat[valid_orbit]
-            
+
             if np.any(~np.isnan(filtered_lon)) and filtered_lon.size > 0:
                 lons.extend([np.nanmin(filtered_lon), np.nanmax(filtered_lon)])
             if np.any(~np.isnan(filtered_lat)) and filtered_lat.size > 0:
@@ -251,15 +375,22 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
     # Particle subset
     particles = particle_subset or trajectories.particle.values
 
-    # Wind streamlines (if provided)
-    altitude_km = trajectories.isel(particle=particles[0]).z.isel(time=0).mean('ensemble').item()
-
-    if wind is not None:
-        wind_avg = (
-            wind.sel(time=slice(trajectories.time[-1], trajectories.time[0]))
-            .sel(z_mc=1e3 * altitude_km, method='nearest')
-            .mean(dim='time').squeeze()
-        )
+    # Wind streamlines (if provided and show_wind is True)
+    if wind is not None and show_wind:
+        altitude_km = trajectories.isel(particle=particles[0]).z.isel(time=0).mean(
+            'ensemble').item()
+        if 'time' in wind.dims or 'time' in wind.coords:
+            t_min = trajectories.time.min().values
+            t_max = trajectories.time.max().values
+            wind_slice = wind.sel(time=slice(t_min, t_max))
+            if wind_slice.time.size == 0:
+                wind_slice = wind.sel(time=slice(t_max, t_min))
+            wind_avg = (
+                wind_slice.sel(z_mc=1e3 * altitude_km, method='nearest')
+                .mean(dim='time').squeeze()
+            )
+        else:
+            wind_avg = wind.sel(z_mc=1e3 * altitude_km, method='nearest').squeeze()
 
         speed = np.sqrt(wind_avg.u ** 2 + wind_avg.v ** 2)
         speed_max = np.maximum(speed.max(), 1e-6)
@@ -286,8 +417,20 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
             p: (m, trajectories.time.size - 1) for p, m in representative_members
         }
     else:
-        if orbit is not None and calculate_intersections:
-            representative_ensemble = generate_representative_particles(trajectories, orbit)
+        has_orbit = orbit is not None
+        has_target = target_point is not None
+        if (has_orbit or has_target) and calculate_intersections:
+            representative_ensemble = generate_representative_particles(
+                trajectories,
+                orbit_df=orbit if has_orbit else None,
+                target_point=target_point if has_target else None,
+                max_dist_km=max_dist_km,
+            )
+            # Narrow the particles list to those with a qualifying hit.
+            # Particles absent from representative_ensemble had no ensemble
+            # member close enough to the reference and are excluded from
+            # the trajectory plot (the KDE still uses all particles).
+            particles = [p for p in particles if p in representative_ensemble]
         else:
             representative_ensemble = {p: (0, trajectories.time.size - 1) for p in particles}
 
@@ -336,10 +479,12 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
         ax.plot(rep_lon, rep_lat, color='black', alpha=0.6,
                 linewidth=1.0, zorder=3, transform=pc_transform)
 
-        # Sampled altitude markers (every 3rd step on the representative member)
+        # Sampled altitude markers – spacing controlled by a pixel-arc heuristic
+        # so markers don't cluster on slow/dense portions of the track.
         representative = particle.isel(ensemble=rep_ens,
                                        time=slice(None, t_end_idx))
-        sampled = representative.isel(time=slice(None, None, 3))
+        stride = _marker_stride(rep_lon, rep_lat, ax)
+        sampled = representative.isel(time=slice(None, None, stride))
         sampled.plot.scatter(x="lon", y="lat", hue='z', cmap=cmap_altitude,
                              norm=norm_altitude, marker=markers[i], s=50,
                              ax=ax, zorder=2, add_colorbar=False,
@@ -358,7 +503,8 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
 
         # Annotate last representative point (only once to avoid clutter/overlapping date boxes)
         if i == particles[0]:
-            rep_time_str = pd.to_datetime(representative.time[-1].item()).strftime('%Y-%m-%d %H:%M UTC')
+            rep_time_str = pd.to_datetime(representative.time[-1].item()).strftime(
+                '%Y-%m-%d %H:%M UTC')
             ann_lon = rep_lon[-1]
             ann_lat = rep_lat[-1]
 
@@ -378,14 +524,15 @@ def visualize_trajectories_percentile_kde(trajectories, wind=None, particle_subs
     if target_point is not None and tp_lon is not None and tp_lat is not None:
         ax.scatter(tp_lon, tp_lat, color='gold', marker='*', s=140, edgecolor='black',
                    linewidth=0.8, zorder=12, transform=ccrs.PlateCarree())
-        
-        ax.text(tp_lon + 1.2, tp_lat - 0.3, target_label, color='black',
-                fontsize=minor_fontsize - 1, fontweight='bold', va='center', ha='left',
-                transform=ccrs.PlateCarree(),
-                bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="gray", alpha=0.85))
-                
+
+        # ax.text(tp_lon, tp_lat - 0.6, target_label, color='black',
+        #         fontsize=minor_fontsize - 1, fontweight='bold', va='top', ha='center',
+        #         transform=ccrs.PlateCarree(),
+        #         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="gray", alpha=0.85))
+
         particle_patches.append(mlines.Line2D([], [], color='gold', marker='*', linestyle='None',
-                                              markersize=10, markeredgecolor='black', label=target_label))
+                                              markersize=10, markeredgecolor='black',
+                                              label=target_label))
 
     # KDE plot of endpoint density
     time_endpoints = trajectories.time[-1]
@@ -604,7 +751,8 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
                                lat.where(intersect_t, drop=True),
                                zs=alt.where(intersect_t, drop=True),
                                color='green', s=25, marker='o', edgecolor='black', linewidth=0.5,
-                               label='Intersection (Target)' if (p == particles[0] and e == 0) else "",
+                               label='Intersection (Target)' if (
+                                           p == particles[0] and e == 0) else "",
                                zorder=11)
                     has_intersect = True
 
@@ -615,18 +763,20 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
     # === Compute axes limits using percentiles to ignore long-drifting outliers ===
     traj_lon = traj.lon.values
     traj_lat = traj.lat.values
-    
+
     lons_to_bound = []
     lats_to_bound = []
-    
+
     if np.any(~np.isnan(traj_lon)):
-        lons_to_bound.extend([float(np.nanpercentile(traj_lon, 2.5)), float(np.nanpercentile(traj_lon, 97.5))])
+        lons_to_bound.extend(
+            [float(np.nanpercentile(traj_lon, 2.5)), float(np.nanpercentile(traj_lon, 97.5))])
     if np.any(~np.isnan(traj_lat)):
-        lats_to_bound.extend([float(np.nanpercentile(traj_lat, 2.5)), float(np.nanpercentile(traj_lat, 97.5))])
-        
+        lats_to_bound.extend(
+            [float(np.nanpercentile(traj_lat, 2.5)), float(np.nanpercentile(traj_lat, 97.5))])
+
     lons_to_bound.extend([orbit["GLon"].min(), orbit["GLon"].max()])
     lats_to_bound.extend([orbit["GLat"].min(), orbit["GLat"].max()])
-    
+
     if target_orbit is not None:
         if isinstance(target_orbit, xr.Dataset):
             target_lons = np.atleast_1d(target_orbit["lon"].values)
@@ -636,16 +786,16 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
             target_lats = np.atleast_1d(target_orbit["GLat"].values)
         lons_to_bound.extend([target_lons.min(), target_lons.max()])
         lats_to_bound.extend([target_lats.min(), target_lats.max()])
-        
+
     lon_min, lon_max = min(lons_to_bound), max(lons_to_bound)
     lat_min, lat_max = min(lats_to_bound), max(lats_to_bound)
-    
+
     # Add small padding (5% of span or at least 2 degrees)
     lon_span = lon_max - lon_min
     lat_span = lat_max - lat_min
     lon_pad = max(0.05 * lon_span, 2.0)
     lat_pad = max(0.05 * lat_span, 2.0)
-    
+
     ax.set_xlim(lon_min - lon_pad, lon_max + lon_pad)
     ax.set_ylim(lat_min - lat_pad, lat_max + lat_pad)
 
@@ -670,7 +820,7 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
                 "particle": intersect_indices[:, 1],
                 "ensemble": intersect_indices[:, 2],
             }).sort_values(by="intersect_time")
-            
+
             preview_lines.append("Start Intersections:")
             preview_lines.extend([
                 f"  P{row.particle}, E{row.ensemble}: "
@@ -686,7 +836,7 @@ def plot_orbit_and_ensemble_3d(trajectories, orbit, target_orbit=None,
                 "particle": intersect_indices_target[:, 1],
                 "ensemble": intersect_indices_target[:, 2],
             }).sort_values(by="intersect_time")
-            
+
             preview_lines.append("Target Intersections:")
             preview_lines.extend([
                 f"  P{row.particle}, E{row.ensemble}: "

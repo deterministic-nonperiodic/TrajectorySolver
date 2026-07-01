@@ -7,9 +7,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from trajsolver import LagrangianTrajectories, save_cf_compliant, read_falcon
-from trajsolver.visualization import plot_orbit_and_ensemble_3d, \
-    visualize_trajectories_percentile_kde
+from trajsolver import LagrangianTrajectories, save_cf_compliant, read_falcon, sample_orbit_positions
+from trajsolver.visualization import plot_orbit_and_ensemble_3d, visualize_trajectories_percentile_kde
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
@@ -26,9 +25,9 @@ wind_data = xr.open_dataset(DATA_DIR / "jawara_winds_HL_02-2025.nc")
 falcon_orbit = read_falcon(BASE_PATH / "Trajectory_2025-02-19/orbgen#12.dat")
 falcon_orbit = falcon_orbit[falcon_orbit["GAlt"] < 110]
 
-target_time = np.array(["2025-02-22T00:00:00"], dtype="datetime64[ns]")
+target_time = np.array(["2025-02-22T15:35:00"], dtype="datetime64[ns]")
 
-target_orbit = xr.Dataset(
+target_point = xr.Dataset(
     coords={"time": target_time},
     data_vars={
         "lon": ("time", np.array([37.0])),
@@ -40,22 +39,19 @@ target_orbit = xr.Dataset(
 # ---------------------------------------------------------------------------
 # Parameters
 # ---------------------------------------------------------------------------
-start_date = "2025-02-19T03:44:00"
-end_date = "2025-02-22T00:00:00"
+start_date = "2025-02-19T03:42:00"
+end_date = "2025-02-22T15:32:00"
 
-intersection_lon = [-2.5, -2.25]
-intersection_lat = [53.3, 53.1]
-intersection_altitudes = [79.5, 78.0]
+n_particles = 10  # starting locations drawn from the re-entry arc
+orbit_seed = 42   # change for a different draw; None → non-reproducible
 
-initial_positions = [
-    (lon, lat, 1e3 * alt)
-    for lon, lat in zip(intersection_lon, intersection_lat)
-    for alt in intersection_altitudes
-]
+initial_positions = sample_orbit_positions(
+    falcon_orbit, n=n_particles, alt_min=70.0, lon_min=-10.0, seed=orbit_seed
+)
 
 time_step = "10 min"
 time_lag = "0 min"
-solver_method = "RK23"
+solver_method = "RK45"
 interp_method = "linear"
 noise_type = "lognormal"
 ensemble_size = 100
@@ -67,7 +63,7 @@ out_filename = DATA_DIR / (
 )
 
 # ---------------------------------------------------------------------------
-# Solve / load
+# Solve
 # ---------------------------------------------------------------------------
 if not out_filename.exists():
     solver = LagrangianTrajectories(
@@ -84,7 +80,7 @@ if not out_filename.exists():
         initial_positions,
         end_date=end_date,
         ensemble_size=ensemble_size,
-        target=target_orbit,
+        target=target_point,
         distance_tolerance=25e3,
     )
     save_cf_compliant(trajectories_dataset, str(out_filename))
@@ -101,15 +97,16 @@ visualize_trajectories_percentile_kde(
     trajectories_dataset,
     wind=wind_data,
     orbit=falcon_orbit,
-    calculate_intersections=False,
+    calculate_intersections=True,
     figure_name=str(FIG_DIR / fig_stem),
     map_extent=[-30, 50, 40, 85],
-    target_point=target_orbit,
+    target_point=target_point,
     target_label="OSIRIS",
+    max_dist_km=500,
 )
 
 plot_orbit_and_ensemble_3d(
-    trajectories_dataset, falcon_orbit, target_orbit=target_orbit,
+    trajectories_dataset, falcon_orbit, target_orbit=target_point,
     max_ensemble=trajectories_dataset.ensemble.size,
     particle_subset=None,
     horiz_tol_km=120, vert_tol_km=15,
